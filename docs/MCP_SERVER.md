@@ -108,7 +108,7 @@ Add the same stdio server to the workspace MCP configuration:
 
 ## Boundary
 
-The MCP server only reads compiled local artifacts:
+Default MCP serving reads the compiled local artifacts below. The opt-in verified reader additionally checks bounded source/configuration/compiler identity as described above.
 
 - `context-packet.json`
 - `source-map.json`
@@ -145,7 +145,7 @@ At the start of work, the assistant should disclose whether it is using:
 
 ECF Core MCP results are guidance and provenance. For code changes, direct source-file inspection remains the source of truth.
 
-## Artifact cache freshness
+## Default artifact cache freshness
 
 Each tool call reads and hashes the seven compiled JSON artifacts listed above.
 Unchanged bytes reuse the parsed/indexed cache; changed bytes invalidate it even
