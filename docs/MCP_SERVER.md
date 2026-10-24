@@ -21,6 +21,18 @@ ecf-core serve-mcp .ecf-core
 
 Configure that command as a local stdio MCP server in the IDE or agent client.
 
+### Optional verified generation reader (source candidate)
+
+Default serving above retains the existing content-byte cache without source-freshness checks. To opt in explicitly after compiling a fresh generation with `node scripts/fresh-context.cjs compile /path/to/project`, use:
+
+```bash
+node bin/ecf-core.js serve-mcp --verified-project /path/to/project
+```
+
+This read-only mode checks source/configuration/compiler identity and the selected generation on every tool call, hashes the exact consumed artifact buffers, computes the response using captured reader modules in the MCP process, and verifies the generation again before returning. Stale or unavailable evidence returns an error without cached context. It never compiles or refreshes automatically. An artifact-directory argument cannot be combined with this flag.
+
+Only search, route, source, policy and manifest tools are exposed. Other tools remain available through default serving but are not qualified for verified generation consumption. The per-request `verified_consumption` receipt is source-reader evidence; `host_consumption_verified` remains false. No installed host verification, runtime configuration change, automatic activation, or sandboxing is claimed. See [FRESH_CONTEXT.md](./FRESH_CONTEXT.md#opt-in-verified-mcp-consumption) for digest bindings, limits and unsupported cases.
+
 For Codex, generate a workspace-specific resident MCP config:
 
 ```bash
@@ -132,3 +144,17 @@ At the start of work, the assistant should disclose whether it is using:
 - none of them
 
 ECF Core MCP results are guidance and provenance. For code changes, direct source-file inspection remains the source of truth.
+
+## Artifact cache freshness
+
+Each tool call reads and hashes the seven compiled JSON artifacts listed above.
+Unchanged bytes reuse the parsed/indexed cache; changed bytes invalidate it even
+when file size and modification time are preserved. On a cache miss, parsing uses
+the same captured bytes as the hashes. Read and JSON errors are surfaced rather
+than falling back to a previous cached result.
+
+This adds file reads and hashing per request; it does not establish an atomic
+multi-file generation, authenticate a compiler seal, prove source/config
+freshness, or qualify live host consumption. Those broader generation-reader
+requirements remain tracked in issue #46. Resident/work-memory and preview tools
+retain their separate read paths and validation boundaries.

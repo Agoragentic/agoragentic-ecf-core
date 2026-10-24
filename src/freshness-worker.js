@@ -95,6 +95,39 @@ function workerArgs(identity, sourceRoot, operation, root, outDir = '') {
   return [permission, '--allow-fs-read=*', '--allow-fs-write=*',
     '--eval', bytes.toString('utf8'), '--', 'ecf-fresh-worker', sourceRoot, operation, root, outDir];
 }
+// A private CommonJS graph for the long-lived reader. Unlike the child
+// bootstrap below, this must not replace process-global module loaders/cache.
+// Only captured local buffers and Node builtins may be required. This binds
+// execution bytes; it is not a malicious-code or filesystem sandbox.
+function capturedGraph(identity, sourceRoot = __dirname) {
+  const cache = new Map(), loaded = new Map();
+  const load = filename => {
+    if (cache.has(filename)) return cache.get(filename).exports;
+    const bytes = identity.buffers.get(filename);
+    if (!bytes) fail('unbound_reader_dependency');
+    const module = new Module(filename);
+    module.filename = filename;
+    module.paths = Module._nodeModulePaths(path.dirname(filename));
+    Object.defineProperty(module, 'ecfCapturedReader', { value: Object.freeze({ digest: identity.digest, loaded }) });
+    cache.set(filename, module);
+    loaded.set(path.relative(sourceRoot, filename).replace(/\\/g, '/'), hash(bytes));
+    const localRequire = request => Module.isBuiltin(request) ? require(request)
+      : load(Module._resolveFilename(request, module));
+    localRequire.resolve = request => Module._resolveFilename(request, module);
+    module.require = localRequire;
+    if (filename.endsWith('.json')) module.exports = JSON.parse(bytes.toString('utf8'));
+    else if (filename.endsWith('.js')) {
+      const body = bytes.toString('utf8').replace(/^\uFEFF/, '').replace(/^#![^\n]*/, '');
+      const execute = vm.compileFunction(body, ['exports', 'require', 'module', '__filename', '__dirname'], {
+        filename, importModuleDynamically: () => fail('unbound_reader_dependency'),
+      });
+      execute.call(module.exports, module.exports, localRequire, module, filename, path.dirname(filename));
+    } else fail('unbound_reader_dependency');
+    module.loaded = true;
+    return module.exports;
+  };
+  return { load, loaded };
+}
 async function main() {
   if (!process.permission || process.permission.has('child') || process.permission.has('worker')) fail('worker_lifecycle_not_restricted');
   const [, , sourceRoot, operation, root, outDir] = process.argv;
@@ -124,7 +157,8 @@ async function main() {
   let result;
   if (operation === 'compile') result = await api.compileCandidate(root, outDir);
   else if (operation === 'snapshot') result = api.snapshotCandidate(root, outDir);
-  else if (operation === 'inspect' || operation === 'read') result = api.inspectGeneration(root, { includeContext: operation === 'read' }, identity);
+  else if (operation === 'inspect' || operation === 'read' || operation === 'verify') result = api.inspectGeneration(root,
+    { includeContext: operation === 'read', includeVerification: operation === 'verify' }, identity);
   else fail('invalid_worker_operation');
   if (identity.digest !== captureCompiler(sourceRoot).digest) fail('source_changed_during_compile');
   const execution = { compiler_digest: identity.digest, runtime: identity.runtime, lifecycle: 'node_permission_no_descendants',
@@ -136,4 +170,4 @@ if (process.argv[1] === 'ecf-fresh-worker' && module.id === '[eval]') main().cat
     : /^[a-z_]+$/.test(error.code || '') ? error.code : 'compiler_child_failed';
   process.stdout.write(JSON.stringify({ error: code })); process.exitCode = 1;
 });
-module.exports = { captureCompiler, childEnvironment, workerArgs };
+module.exports = { captureCompiler, childEnvironment, workerArgs, capturedGraph };

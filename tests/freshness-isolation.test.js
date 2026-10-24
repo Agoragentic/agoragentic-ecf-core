@@ -180,6 +180,7 @@ test('child ignores parent NODE_OPTIONS preloads and NODE_PATH', async t => {
     process.env.NODE_OPTIONS = `--require "${preload}"`; process.env.NODE_PATH = f.temp;
     const result = await api.compileFresh(f.root);
     assert.equal(result.state, 'fresh'); assert.equal(api.inspectFresh(f.root).state, 'fresh');
+    assert.equal(api.inspectFresh(f.root, { includeVerification: true }).state, 'fresh');
     assert(!fs.existsSync(marker));
   } finally {
     if (oldOptions === undefined) delete process.env.NODE_OPTIONS; else process.env.NODE_OPTIONS = oldOptions;
@@ -263,13 +264,13 @@ test('Node denies alternate process APIs and worker threads in the captured comp
   assertBound(f, result, 'compile.js');
 });
 
-for (const operation of ['snapshot', 'inspect']) test(`${operation} dependencies also cannot create descendants`, async t => {
+for (const operation of ['snapshot', 'inspect', 'verify']) test(`${operation} dependencies also cannot create descendants`, async t => {
   const f = fixture(t), api = f.load(), first = await api.compileFresh(f.root);
   const pointer = fs.readFileSync(path.join(f.freshDir, 'current.json'), 'utf8');
   const config = path.join(f.copy, 'src/core/config.js');
   fs.appendFileSync(config, `\nif (process.argv[3] === ${JSON.stringify(operation)}) require('node:child_process').spawn(process.execPath, ['-e', ''], {stdio:'ignore', detached:true, windowsHide:true});\n`);
-  if (operation === 'inspect') {
-    const inspection = api.inspectFresh(f.root);
+  if (operation === 'inspect' || operation === 'verify') {
+    const inspection = api.inspectFresh(f.root, { includeVerification: operation === 'verify' });
     assert.equal(inspection.state, 'unknown'); assert.equal(inspection.context, null);
     assert.equal(inspection.reason, 'compiler_capability_denied');
   } else await assert.rejects(api.compileFresh(f.root), { code: 'compiler_capability_denied' });

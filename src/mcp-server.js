@@ -3,9 +3,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const readline = require('node:readline');
+const { createHash, randomUUID } = require('node:crypto');
 const { inspectAgentOsPreview } = require('./agent-os-preview');
 const { routeCompiledQuery } = require('./context-router');
 const { rankRecords } = require('./core/ranking');
+const { sha256 } = require('./core/hash');
 const {
     buildEcfCoreContextPack,
     buildEcfCoreResidentStatus,
@@ -137,24 +139,27 @@ const ARTIFACT_FILES = [
 ];
 
 const artifactCache = new Map();
+const VERIFIED_TOOLS = new Set([
+    'ecf_core.search_context', 'ecf_core.route_query', 'ecf_core.get_source',
+    'ecf_core.get_policy', 'ecf_core.get_manifest',
+]);
+const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+const refuse = code => { throw Object.assign(new Error(code), { code }); };
 
-function readJson(filePath) {
-    if (!fs.existsSync(filePath)) {
-        return null;
-    }
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
-function artifactSignature(resolvedDir) {
-    return ARTIFACT_FILES.map((fileName) => {
-        const filePath = path.join(resolvedDir, fileName);
+function readArtifactSnapshot(resolvedDir) {
+    const contents = new Map();
+    const signature = ARTIFACT_FILES.map((fileName) => {
+        let bytes;
         try {
-            const stat = fs.statSync(filePath);
-            return `${fileName}:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
-        } catch {
-            return `${fileName}:missing`;
+            bytes = fs.readFileSync(path.join(resolvedDir, fileName));
+        } catch (error) {
+            if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+            bytes = null;
         }
+        contents.set(fileName, bytes);
+        return `${fileName}:${bytes === null ? 'missing' : sha256(bytes)}`;
     }).join('|');
+    return { contents, signature };
 }
 
 function indexArtifacts(artifacts) {
@@ -171,20 +176,25 @@ function indexArtifacts(artifacts) {
 
 function loadArtifacts(artifactDir) {
     const resolvedDir = path.resolve(artifactDir || '.ecf-core');
-    const signature = artifactSignature(resolvedDir);
+    const { contents, signature } = readArtifactSnapshot(resolvedDir);
     const cached = artifactCache.get(resolvedDir);
     if (cached?.signature === signature) {
         return cached.artifacts;
     }
+    // Parse the exact bytes used by the cache key, without a second file read.
+    const readJson = (fileName) => {
+        const bytes = contents.get(fileName);
+        return bytes === null ? null : JSON.parse(bytes.toString('utf8'));
+    };
     const artifacts = indexArtifacts({
         artifactDir: resolvedDir,
-        contextPacket: readJson(path.join(resolvedDir, 'context-packet.json')),
-        sourceMap: readJson(path.join(resolvedDir, 'source-map.json')),
-        sourceManifest: readJson(path.join(resolvedDir, 'source-manifest.json')),
-        policySummary: readJson(path.join(resolvedDir, 'policy-summary.json')),
-        codeIndex: readJson(path.join(resolvedDir, 'code-index.json')),
-        contextRouter: readJson(path.join(resolvedDir, 'context-router.json')),
-        manifest: readJson(path.join(resolvedDir, 'manifest.json')),
+        contextPacket: readJson('context-packet.json'),
+        sourceMap: readJson('source-map.json'),
+        sourceManifest: readJson('source-manifest.json'),
+        policySummary: readJson('policy-summary.json'),
+        codeIndex: readJson('code-index.json'),
+        contextRouter: readJson('context-router.json'),
+        manifest: readJson('manifest.json'),
     });
     artifactCache.set(resolvedDir, { signature, artifacts });
     return artifacts;
@@ -306,8 +316,87 @@ function routeQuery(artifacts, args = {}) {
     });
 }
 
-function callTool({ artifactDir, name, args }) {
-    const artifacts = loadArtifacts(artifactDir);
+function callVerifiedTool({ artifactDir, verifiedProjectRoot, name, args }) {
+    const reader = module.ecfCapturedReader;
+    if (!reader) refuse('verified_reader_not_bound');
+    if (typeof verifiedProjectRoot !== 'string' || !verifiedProjectRoot.trim()) refuse('invalid_verified_project');
+    if (artifactDir !== undefined) refuse('verified_artifact_override_not_allowed');
+    if (!VERIFIED_TOOLS.has(name)) refuse('tool_not_supported_in_verified_mode');
+    const requestBytes = JSON.stringify({ name, args: args || {} });
+    if (Buffer.byteLength(requestBytes) > 64 * 1024) refuse('verified_request_limit');
+    const request = JSON.parse(requestBytes);
+    const root = path.resolve(verifiedProjectRoot);
+    // Inspection always uses a fresh graph. Never use the ordinary artifact cache
+    // or the parent process's cached configuration/policy to authorize a read.
+    const { inspectFresh, readBounded } = require('./freshness');
+    const inspect = () => {
+        const state = inspectFresh(root, { includeVerification: true });
+        if (state.state !== 'fresh' || !state.verification) refuse('verified_context_unavailable');
+        return state.verification;
+    };
+    const identity = inspect();
+    if (identity.compiler_digest !== reader.digest) refuse('verified_reader_changed');
+    const artifactDirForGeneration = path.join(fs.realpathSync(root), '.ecf-core', 'fresh', identity.generation);
+    const expected = new Map(identity.artifacts);
+    const consumed = [];
+    const read = fileName => {
+        if (!expected.has(fileName)) refuse('verified_artifact_missing');
+        const bytes = readBounded(path.join(artifactDirForGeneration, fileName), 8 * 1024 * 1024);
+        const sha256 = digest(bytes);
+        if (sha256 !== expected.get(fileName)) refuse('verified_artifact_changed');
+        consumed.push([fileName, sha256]);
+        return JSON.parse(bytes);
+    };
+    // Each parsed object is derived from the exact bounded buffer checked here,
+    // in this MCP process. No tool in this mode may independently reread disk.
+    const artifacts = indexArtifacts({
+        artifactDir: artifactDirForGeneration,
+        contextPacket: read('context-packet.json'),
+        sourceMap: read('source-map.json'),
+        sourceManifest: read('source-manifest.json'),
+        policySummary: read('policy-summary.json'),
+        codeIndex: read('code-index.json'),
+        contextRouter: read('context-router.json'),
+        manifest: read('manifest.json'),
+    });
+    const result = dispatchTool(artifacts, request.name, request.args);
+    const responseBytes = JSON.stringify(result);
+    if (Buffer.byteLength(responseBytes) > 8 * 1024 * 1024) refuse('verified_response_limit');
+    // Check again after computing the response. Pointer, source, policy,
+    // compiler, seal or any artifact drift discards this response entirely.
+    if (JSON.stringify(inspect()) !== JSON.stringify(identity)) refuse('verified_generation_changed');
+    return {
+        ...JSON.parse(responseBytes),
+        verified_consumption: {
+            schema_version: 'ecf-core.mcp.verified-consumption.v1',
+            request_verified: true,
+            host_consumption_verified: false,
+            request_id: randomUUID(),
+            reader_pid: process.pid,
+            request_sha256: digest(requestBytes),
+            response_sha256: digest(responseBytes),
+            ...identity,
+            reader_digest: reader.digest,
+            reader_loaded_modules: [...reader.loaded].sort((a, b) => a[0] < b[0] ? -1 : 1),
+            consumed_artifacts: consumed,
+        },
+    };
+}
+
+function callTool(options) {
+    if (options.verifiedProjectRoot !== undefined) {
+        // The controller may be cached A while disk is B. Read, dispatch and
+        // receipt creation must execute B's captured buffers in this process,
+        // never A's cached consumer/ranking functions relabeled as B.
+        const { captureCompiler, capturedGraph } = require('./freshness-worker');
+        const identity = captureCompiler();
+        const graph = capturedGraph(identity);
+        return graph.load(__filename).callVerifiedTool(options);
+    }
+    return dispatchTool(loadArtifacts(options.artifactDir), options.name, options.args);
+}
+
+function dispatchTool(artifacts, name, args = {}) {
     if (name === 'ecf_core.search_context') return searchContext(artifacts, args);
     if (name === 'ecf_core.route_query') return routeQuery(artifacts, args);
     if (name === 'ecf_core.get_source') return getSource(artifacts, args);
@@ -397,13 +486,15 @@ function handleMcpRequest(request, options = {}) {
         return {
             jsonrpc: '2.0',
             id: request.id,
-            result: { tools: TOOLS },
+            result: { tools: options.verifiedProjectRoot === undefined ? TOOLS
+                : TOOLS.filter(tool => VERIFIED_TOOLS.has(tool.name)) },
         };
     }
     if (request.method === 'tools/call') {
         const params = request.params || {};
         const value = callTool({
             artifactDir: options.artifactDir,
+            verifiedProjectRoot: options.verifiedProjectRoot,
             name: params.name,
             args: params.arguments || {},
         });
@@ -417,7 +508,9 @@ function handleMcpRequest(request, options = {}) {
 }
 
 function runMcpServer(options = {}) {
-    const artifactDir = path.resolve(options.artifactDir || '.ecf-core');
+    const readerOptions = options.verifiedProjectRoot === undefined
+        ? { artifactDir: path.resolve(options.artifactDir || '.ecf-core') }
+        : { verifiedProjectRoot: options.verifiedProjectRoot, ...(options.artifactDir === undefined ? {} : { artifactDir: options.artifactDir }) };
     const input = options.input || process.stdin;
     const output = options.output || process.stdout;
     const rl = readline.createInterface({ input });
@@ -427,7 +520,7 @@ function runMcpServer(options = {}) {
         let response = null;
         try {
             const request = JSON.parse(line);
-            response = handleMcpRequest(request, { artifactDir });
+            response = handleMcpRequest(request, readerOptions);
         } catch (error) {
             let id = null;
             try {
@@ -448,4 +541,6 @@ module.exports = {
     callTool,
     handleMcpRequest,
     runMcpServer,
+    // Internal captured-graph entry; public callers use callTool/handleMcpRequest.
+    callVerifiedTool,
 };

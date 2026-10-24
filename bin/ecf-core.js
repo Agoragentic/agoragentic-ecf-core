@@ -44,6 +44,7 @@ Usage:
   ecf-core handoff [project] [--out .ecf-core] [--write] [--json]
   ecf-core mcp-config --target codex [project] [--out .ecf-core] [--write] [--install-codex]
   ecf-core serve-mcp [artifact-dir]
+  ecf-core serve-mcp --verified-project /path/to/project
   ecf-core validate [artifact-dir]
   ecf-core version
 
@@ -346,8 +347,14 @@ async function main() {
     }
 
     if (command === 'serve-mcp') {
-        const [artifactArg = '.ecf-core'] = positional(args);
-        runMcpServer({ artifactDir: path.resolve(artifactArg) });
+        const verifiedProjectRoot = readFlag(args, '--verified-project');
+        if (verifiedProjectRoot !== null) {
+            if (positional(args).length) throw new Error('verified mode does not accept an artifact directory');
+            runMcpServer({ verifiedProjectRoot: path.resolve(verifiedProjectRoot) });
+        } else {
+            const [artifactArg = '.ecf-core'] = positional(args);
+            runMcpServer({ artifactDir: path.resolve(artifactArg) });
+        }
         return;
     }
 

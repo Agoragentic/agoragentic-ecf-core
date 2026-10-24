@@ -1,6 +1,6 @@
 # Opt-in current-context compilation and retrieval
 
-Status: implementation candidate. This is a local CLI path over the existing ECF compiler, not a replacement compiler, database, automatic refresh daemon, or production context service. Existing `ecf-core` commands and MCP retrieval are unchanged. They do not acquire freshness guarantees merely because this module exists.
+Status: implementation candidate. This is a local CLI path over the existing ECF compiler, not a replacement compiler, database, automatic refresh daemon, or production context service. Existing `ecf-core` commands and default MCP retrieval are unchanged. They do not acquire freshness guarantees merely because this module exists. The explicitly selected verified MCP reader below is default-off.
 
 ## Commands
 
@@ -46,8 +46,27 @@ Killing the parent or machine can still leave a lock and an unselected partial g
 
 ## Verification and next integration
 
+### Opt-in verified MCP consumption
+
+After an explicit successful fresh compile, a source-checkout MCP process can be started manually with:
+
+```sh
+node bin/ecf-core.js serve-mcp --verified-project /path/to/project
+```
+
+The equivalent source API is `runMcpServer({ verifiedProjectRoot: projectRoot })`, or `callMcpTool({ verifiedProjectRoot: projectRoot, name, args })`. This option selects only the canonical project's `.ecf-core/fresh/current.json`; an artifact-directory override is refused. No configuration generator or installed host entry is changed. Starting or querying the reader never compiles, refreshes, installs, writes Memory, or activates a host integration.
+
+Only `search_context`, `route_query`, `get_source`, `get_policy`, and `get_manifest` are listed/accepted in this mode. Resident status, context-pack, preview and work-memory tools independently read other files and are deliberately unavailable. Default artifact-directory serving keeps its existing tool surface and content-byte cache; it has no source-freshness or verified-consumption claim.
+
+Each verified call captures a bounded compiler/reader graph and executes read, ranking/routing, and receipt construction from those exact buffers in a private CommonJS graph **inside the MCP process**, without a parent `require` cache fallback or process-global loader changes. A fresh restricted inspection worker checks the selected generation before and after response computation. The reader hashes every one of the seven consumed JSON artifact buffers before parsing it and bypasses the ordinary artifact cache. Both inspections must agree on generation, seal hash, snapshot/source/configuration/compiler digests, and the complete artifact inventory; the reader graph digest must equal that compiler digest. Any unavailable evidence or detected drift discards the entire response with a JSON-RPC error, without last-good fallback. An explicit refresh can supply a new generation on the next request in the same MCP process.
+
+The `verified_consumption` receipt binds those identities, the exact consumed artifact hashes, captured reader module hashes, request/response SHA-256 digests, reader PID, and a distinct request ID. `request_verified: true` describes this request's bounded read/response interval only; `host_consumption_verified` remains **false**, both in receipts and generation seals. Response hashing covers the result object before adding the receipt. This is source/API and disposable-process test evidence, not proof that an installed IDE/agent used the response. It grants no downstream authority and makes no sandbox claim. Another process may change files after the final observation; hostile filesystem writers and restricted same-metadata content edits retain the limits above.
+
+Verified argument JSON is limited to 64 KiB and the result before its receipt to 8 MiB. Each consumed artifact retains the 8 MiB bound, and both isolated inspections retain their source/inventory, 30-second timeout and output bounds. This does not add a general-purpose stdio transport or machine-attestation boundary.
+
 ```sh
 node --test tests/freshness-snapshot.test.js tests/freshness-compile.test.js tests/freshness-review.test.js tests/freshness-disposition.test.js tests/freshness-isolation.test.js
+node --test tests/mcp-verified.test.js
 npm test
 npm run check
 npm run docs:check
@@ -57,4 +76,4 @@ The disposition regressions compare real canonical records against snapshot meta
 
 `tests/freshness-isolation.test.js` addresses issue #46 using disposable copies of the real compiler: parent loads A, disk changes to compiler/dependency B, and refresh executes B with bound bytes. It covers JS and JSON dependencies, source/config/compiler drift, pending child work, failure cleanup, timeout/cancellation, replacement locks, output bounds and preload exclusion. Lifecycle probes exercise actual Node process APIs for inherited-pipe and detached descendants, alternate spawning APIs, worker threads, verifier/inspection dependencies and bootstrap refusal without permissions. They assert bounded termination, no descendant writes, failed-generation cleanup and pointer/replacement-lock preservation. The same tests run locally on Windows and in the Node 20/22/24 POSIX CI matrix; CI evidence must name its literal checkout SHA, including a PR merge ref when applicable. Filesystem-spy assertions for canonical source admission and marker read counts still invoke the real `compileProject` locally; parent spies do not claim to observe a child's reads.
 
-Compiler isolation is an implementation candidate requiring exact-head CI and review. It does not activate long-lived MCP current-context consumption. The next integration is an explicitly selected MCP mode with host-consumption evidence and compatibility tests. Do not claim the current MCP cache issue is fully fixed by this opt-in path. Memory may consume the bounded status/generation reference through its existing explicit evidence path; this patch does not silently inject or write Memory context.
+Compiler isolation and the opt-in verified reader are implementation candidates requiring exact-head CI and review. `tests/mcp-verified.test.js` exercises one persistent MCP reader across requests, source/configuration/artifact drift including same-size restored timestamps, a primed legacy cache, explicit refresh, generation changes during response computation, substitution restored before final inspection, and parent-cached reader/ranking A versus captured B. These tests qualify the source implementation's consumption interval; installed host verification remains pending. Do not generalize the claim to default MCP serving or unsupported tools. Memory may consume the bounded status/generation reference through its existing explicit evidence path; this patch does not silently inject or write Memory context.

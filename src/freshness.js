@@ -257,12 +257,13 @@ async function compileFresh(projectRoot, options = {}) {
     }
   }
 }
-function inspectGeneration(projectRoot, { includeContext = false } = {}, compiler = captureCompiler()) {
+function inspectGeneration(projectRoot, { includeContext = false, includeVerification = false } = {}, compiler = captureCompiler()) {
   try {
     const root = directory(path.resolve(projectRoot));
     directory(path.join(root, '.ecf-core'));
     const generations = directory(path.join(root, '.ecf-core', 'fresh'));
-    const pointer = JSON.parse(readBounded(path.join(generations, 'current.json'), 4096));
+    const pointerBytes = readBounded(path.join(generations, 'current.json'), 4096);
+    const pointer = JSON.parse(pointerBytes);
     if (!/^gen-[a-f0-9-]{36}$/.test(pointer.generation) || !/^[a-f0-9]{64}$/.test(pointer.seal_hash)) fail('invalid_generation');
     const outDir = directory(path.join(generations, pointer.generation));
     const bytes = readBounded(path.join(outDir, 'freshness.json'));
@@ -279,21 +280,36 @@ function inspectGeneration(projectRoot, { includeContext = false } = {}, compile
     if (!Array.isArray(seal.execution.loaded_modules) || !seal.execution.loaded_modules.some(entry => entry[0] === 'compile.js') ||
         seal.execution.loaded_modules.some(entry => !Array.isArray(entry) || entry.length !== 2 || expected.get(entry[0]) !== entry[1])) fail('compiler_identity_mismatch');
     if (JSON.stringify(generationArtifacts(outDir)) !== JSON.stringify(seal.artifacts)) fail('artifact_changed');
-    const context = includeContext ? JSON.parse(readBounded(path.join(outDir, 'context-packet.json'), 8 * 1024 * 1024)) : undefined;
+    let context;
+    if (includeContext) {
+      const contextBytes = readBounded(path.join(outDir, 'context-packet.json'), 8 * 1024 * 1024);
+      if (hash(contextBytes) !== seal.artifacts.find(x => x[0] === 'context-packet.json')[1]) fail('artifact_changed');
+      context = JSON.parse(contextBytes);
+    }
     // Recheck after reading; never serve a cached generation following detected drift.
     if (captureSnapshot(root, currentConfig(root)).digest !== snapshot.digest) fail('source_changed_during_read');
-    if (hash(readBounded(path.join(outDir, 'context-packet.json'), 8 * 1024 * 1024)) !== seal.artifacts.find(x => x[0] === 'context-packet.json')[1]) fail('artifact_changed');
+    if (JSON.stringify(generationArtifacts(outDir)) !== JSON.stringify(seal.artifacts)) fail('artifact_changed');
+    if (hash(readBounded(path.join(outDir, 'freshness.json'))) !== pointer.seal_hash) fail('seal_changed');
+    if (!readBounded(path.join(generations, 'current.json'), 4096).equals(pointerBytes)) fail('current_generation_changed');
     return { state: 'fresh', generation: seal.generation, source_digest: snapshot.source_digest,
-      host_consumption_verified: false, ...(includeContext ? { context } : {}) };
+      host_consumption_verified: false, ...(includeContext ? { context } : {}),
+      ...(includeVerification ? { verification: {
+        generation: seal.generation, seal_hash: pointer.seal_hash,
+        snapshot_digest: snapshot.digest, source_digest: snapshot.source_digest,
+        config_hash: snapshot.config_hash, compiler_digest: compiler.digest,
+        artifacts: seal.artifacts,
+      } } : {}) };
   } catch (error) {
     return { state: 'unknown', context: null, reason: error.code === 'ERR_ACCESS_DENIED' ? 'compiler_capability_denied'
       : /^[a-z_]+$/.test(error.code || '') ? error.code : 'freshness_unavailable' };
   }
 }
-function inspectFresh(projectRoot, { includeContext = false } = {}) {
+function inspectFresh(projectRoot, { includeContext = false, includeVerification = false } = {}) {
   try {
+    if (includeContext && includeVerification) fail('invalid_inspection_options');
     const compiler = captureCompiler();
-    const child = spawnSync(process.execPath, workerArgs(compiler, __dirname, includeContext ? 'read' : 'inspect', path.resolve(projectRoot)), {
+    const operation = includeVerification ? 'verify' : includeContext ? 'read' : 'inspect';
+    const child = spawnSync(process.execPath, workerArgs(compiler, __dirname, operation, path.resolve(projectRoot)), {
       env: childEnvironment(), encoding: 'utf8', windowsHide: true,
       timeout: 30000, killSignal: 'SIGKILL', maxBuffer: 10 * 1024 * 1024,
     });
