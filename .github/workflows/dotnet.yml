@@ -23,3 +23,7 @@ jobs:
         run: dotnet build dotnet/tests/Agoragentic.EcfCore.Tests/Agoragentic.EcfCore.Tests.csproj --configuration Release --no-restore
       - name: Run .NET safety-policy checks
         run: dotnet run --project dotnet/tests/Agoragentic.EcfCore.Tests/Agoragentic.EcfCore.Tests.csproj --configuration Release --no-build
+      - name: Restore EF Core example
+        run: dotnet restore dotnet/examples/EfCoreApp/EfCoreApp.csproj
+      - name: Build EF Core example
+        run: dotnet build dotnet/examples/EfCoreApp/EfCoreApp.csproj --configuration Release --no-restore
