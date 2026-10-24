@@ -6,6 +6,7 @@ const readline = require('node:readline');
 const { inspectAgentOsPreview } = require('./agent-os-preview');
 const { routeCompiledQuery } = require('./context-router');
 const { rankRecords } = require('./core/ranking');
+const { sha256 } = require('./core/hash');
 const {
     buildEcfCoreContextPack,
     buildEcfCoreResidentStatus,
@@ -138,23 +139,20 @@ const ARTIFACT_FILES = [
 
 const artifactCache = new Map();
 
-function readJson(filePath) {
-    if (!fs.existsSync(filePath)) {
-        return null;
-    }
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
-}
-
-function artifactSignature(resolvedDir) {
-    return ARTIFACT_FILES.map((fileName) => {
-        const filePath = path.join(resolvedDir, fileName);
+function readArtifactSnapshot(resolvedDir) {
+    const contents = new Map();
+    const signature = ARTIFACT_FILES.map((fileName) => {
+        let bytes;
         try {
-            const stat = fs.statSync(filePath);
-            return `${fileName}:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
-        } catch {
-            return `${fileName}:missing`;
+            bytes = fs.readFileSync(path.join(resolvedDir, fileName));
+        } catch (error) {
+            if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+            bytes = null;
         }
+        contents.set(fileName, bytes);
+        return `${fileName}:${bytes === null ? 'missing' : sha256(bytes)}`;
     }).join('|');
+    return { contents, signature };
 }
 
 function indexArtifacts(artifacts) {
@@ -171,20 +169,25 @@ function indexArtifacts(artifacts) {
 
 function loadArtifacts(artifactDir) {
     const resolvedDir = path.resolve(artifactDir || '.ecf-core');
-    const signature = artifactSignature(resolvedDir);
+    const { contents, signature } = readArtifactSnapshot(resolvedDir);
     const cached = artifactCache.get(resolvedDir);
     if (cached?.signature === signature) {
         return cached.artifacts;
     }
+    // Parse the exact bytes used by the cache key, without a second file read.
+    const readJson = (fileName) => {
+        const bytes = contents.get(fileName);
+        return bytes === null ? null : JSON.parse(bytes.toString('utf8'));
+    };
     const artifacts = indexArtifacts({
         artifactDir: resolvedDir,
-        contextPacket: readJson(path.join(resolvedDir, 'context-packet.json')),
-        sourceMap: readJson(path.join(resolvedDir, 'source-map.json')),
-        sourceManifest: readJson(path.join(resolvedDir, 'source-manifest.json')),
-        policySummary: readJson(path.join(resolvedDir, 'policy-summary.json')),
-        codeIndex: readJson(path.join(resolvedDir, 'code-index.json')),
-        contextRouter: readJson(path.join(resolvedDir, 'context-router.json')),
-        manifest: readJson(path.join(resolvedDir, 'manifest.json')),
+        contextPacket: readJson('context-packet.json'),
+        sourceMap: readJson('source-map.json'),
+        sourceManifest: readJson('source-manifest.json'),
+        policySummary: readJson('policy-summary.json'),
+        codeIndex: readJson('code-index.json'),
+        contextRouter: readJson('context-router.json'),
+        manifest: readJson('manifest.json'),
     });
     artifactCache.set(resolvedDir, { signature, artifacts });
     return artifacts;

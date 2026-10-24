@@ -132,3 +132,17 @@ At the start of work, the assistant should disclose whether it is using:
 - none of them
 
 ECF Core MCP results are guidance and provenance. For code changes, direct source-file inspection remains the source of truth.
+
+## Artifact cache freshness
+
+Each tool call reads and hashes the seven compiled JSON artifacts listed above.
+Unchanged bytes reuse the parsed/indexed cache; changed bytes invalidate it even
+when file size and modification time are preserved. On a cache miss, parsing uses
+the same captured bytes as the hashes. Read and JSON errors are surfaced rather
+than falling back to a previous cached result.
+
+This adds file reads and hashing per request; it does not establish an atomic
+multi-file generation, authenticate a compiler seal, prove source/config
+freshness, or qualify live host consumption. Those broader generation-reader
+requirements remain tracked in issue #46. Resident/work-memory and preview tools
+retain their separate read paths and validation boundaries.
