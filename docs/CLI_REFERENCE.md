@@ -42,6 +42,7 @@ Work-memory fields accepted where relevant are `--goal`, `--summary`, `--id`/`--
 |---|---|---|
 | `ecf-core mcp-config --target codex [project]` | Preview a Codex MCP entry, write workspace guidance, or install the entry into a selected Codex home. | `--out`, `--target`, `--codex-home`, `--server-name`, `--write`, `--install-codex`; JSON output. Only `codex` is supported. |
 | `ecf-core serve-mcp [artifact-dir]` | Serve compiled local artifacts through a stdio MCP surface. | Compile first. Stdout is reserved for protocol messages. |
+| `ecf-core serve-mcp --verified-project /path/to/project` | Opt in to per-request verified generation reads. | Never compile/refresh or alter installed host configuration. See [fresh-context limits](./FRESH_CONTEXT.md#opt-in-verified-mcp-consumption). |
 
 MCP tool errors are returned per request as JSON-RPC errors; they are not CLI process exit codes. Restart the MCP client after changing an installed configuration.
 

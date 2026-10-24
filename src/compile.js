@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { AdapterRegistry } = require('./adapters/base');
-const { FilesystemAdapter, walkFiles } = require('./adapters/filesystem');
+const { FilesystemAdapter, readAdmittedSource, walkFiles } = require('./adapters/filesystem');
 const { MarkdownDocsAdapter } = require('./adapters/markdown-docs');
 const { McpContextProviderAdapter } = require('./adapters/mcp-context');
 const { OpenApiAdapter } = require('./adapters/openapi');
@@ -45,14 +45,16 @@ function rootSourcePath(sourcePath) {
     return String(sourcePath || '').split('#')[0];
 }
 
-function looksLikeGeneratedMicroEcfFile(projectRoot, sourcePath) {
+function looksLikeGeneratedMicroEcfFile(projectRoot, sourcePath, config) {
     const rootPath = rootSourcePath(sourcePath);
     if (!GENERATED_MICRO_ECF_ROOT_FILES.has(rootPath)) return false;
     const filePath = path.join(projectRoot, rootPath);
     if (!fs.existsSync(filePath)) return false;
     let text = '';
     try {
-        text = fs.readFileSync(filePath, 'utf8');
+        const raw = readAdmittedSource(filePath, rootPath, config);
+        if (raw === null) return false;
+        text = raw.toString('utf8');
     } catch {
         return false;
     }
@@ -65,16 +67,20 @@ function looksLikeGeneratedMicroEcfFile(projectRoot, sourcePath) {
     return false;
 }
 
-function filterGeneratedEcfArtifacts(records, projectRoot) {
+function filterGeneratedEcfArtifacts(records, projectRoot, config) {
     const generated = [];
     const kept = [];
+    const markerDecisions = new Map();
     for (const record of records) {
         const sourcePath = rootSourcePath(record.path);
         if (sourcePath.startsWith('.ecf-core/') || sourcePath.startsWith('.micro-ecf/')) {
             generated.push(record);
             continue;
         }
-        if (looksLikeGeneratedMicroEcfFile(projectRoot, record.path)) {
+        if (GENERATED_MICRO_ECF_ROOT_FILES.has(sourcePath) && !markerDecisions.has(sourcePath)) {
+            markerDecisions.set(sourcePath, looksLikeGeneratedMicroEcfFile(projectRoot, sourcePath, config));
+        }
+        if (markerDecisions.get(sourcePath)) {
             generated.push(record);
             continue;
         }
@@ -607,7 +613,7 @@ async function compileProject(options = {}) {
     const walkState = { skippedDirectories: [] };
     const fileInventory = walkFiles(projectRoot, config, projectRoot, [], walkState);
     const discoveredRecords = await registry.discoverAll({ projectRoot, config, fileInventory, walkState });
-    const generatedArtifactFilter = filterGeneratedEcfArtifacts(discoveredRecords, projectRoot);
+    const generatedArtifactFilter = filterGeneratedEcfArtifacts(discoveredRecords, projectRoot, config);
     const records = generatedArtifactFilter.kept;
     const allowed = records.filter((record) => record.classification === 'allowed');
     const blocked = records.filter((record) => record.classification === 'blocked');

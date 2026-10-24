@@ -1,9 +1,8 @@
 'use strict';
 
-const fs = require('node:fs');
 const path = require('node:path');
 const { ContextAdapter } = require('./base');
-const { walkFiles } = require('./filesystem');
+const { readAdmittedSource, walkFiles } = require('./filesystem');
 const { sha256, sourceId } = require('../core/hash');
 const { classifyPath, normalizePath } = require('../core/policy');
 
@@ -51,8 +50,8 @@ class SqliteSummaryAdapter extends ContextAdapter {
             const policy = classifyPath(relativePath, config);
             if (policy.classification !== 'allowed') continue;
 
-            const raw = fs.readFileSync(fullPath);
-            if (raw.length > config.max_file_bytes) continue;
+            const raw = readAdmittedSource(fullPath, relativePath, config);
+            if (raw === null) continue;
             const text = raw.toString('utf8');
             const tables = ext === '.sql'
                 ? extractCreateTables(text)
