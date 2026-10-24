@@ -145,7 +145,7 @@ At the start of work, the assistant should disclose whether it is using:
 
 ECF Core MCP results are guidance and provenance. For code changes, direct source-file inspection remains the source of truth.
 
-## Default artifact cache freshness
+## Artifact cache freshness
 
 Each tool call reads and hashes the seven compiled JSON artifacts listed above.
 Unchanged bytes reuse the parsed/indexed cache; changed bytes invalidate it even
