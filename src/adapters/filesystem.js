@@ -132,6 +132,16 @@ function redactSensitiveLine(line) {
     const heading = text.match(/^([ \t]*#{1,6}[ \t]+)([\s\S]*)$/);
     const prefix = heading ? heading[1] : '';
     const content = heading ? heading[2] : text;
+    const json = redactJsonText(content);
+    if (json !== null) return prefix + json;
+    if (/^\s*"/.test(content)) {
+        // Property lists in examples can contain several assignments on one
+        // line. Validate them as an object instead of masking just the first.
+        const trailing = content.match(/,?[ \t\r]*$/)[0];
+        const body = content.slice(0, content.length - trailing.length);
+        const properties = redactJsonText(`{${body}}`);
+        if (properties !== null) return prefix + properties.slice(1, -1) + trailing;
+    }
     const jsonPair = content.match(/^(\s*"([^"]+)"\s*:\s*)("(?:\\.|[^"\\])*"|[^,\r\n}]*)(.*)$/);
     if (jsonPair && isSensitiveKey(jsonPair[2])) {
         return `${prefix}${jsonPair[1]}"[REDACTED]"${jsonPair[4]}`;
@@ -150,11 +160,76 @@ function redactSensitiveLine(line) {
     return prefix + content.replace(SENSITIVE_VALUE_PATTERN, '[REDACTED]');
 }
 
+function redactJsonText(text) {
+    if (!/^\s*(?:\{|\[|")/.test(text)) return null;
+    try {
+        // Validate syntax, but never serialize the parsed object: that could
+        // round safe numeric evidence or discard duplicate source properties.
+        JSON.parse(text);
+    } catch {
+        return null;
+    }
+    const tokens = [...text.matchAll(/"(?:\\.|[^"\\])*"|[{}\[\]:,]|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?|true|false|null/g)];
+    const pieces = [];
+    let copiedThrough = 0;
+    const replace = (start, end, value) => {
+        pieces.push(text.slice(copiedThrough, start), value);
+        copiedThrough = end;
+    };
+    for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index];
+        if (!token[0].startsWith('"')) continue;
+        const decoded = JSON.parse(token[0]);
+        const safe = decoded.replace(SENSITIVE_VALUE_PATTERN, '[REDACTED]');
+        if (safe !== decoded) replace(token.index, token.index + token[0].length, JSON.stringify(safe));
+        if (tokens[index + 1]?.[0] !== ':' || !isSensitiveKey(decoded)) continue;
+
+        const start = index + 2;
+        let end = start;
+        if (tokens[start][0] === '{' || tokens[start][0] === '[') {
+            let depth = 1;
+            while (depth > 0) {
+                end += 1;
+                const value = tokens[end][0];
+                if (value === '{' || value === '[') depth += 1;
+                if (value === '}' || value === ']') depth -= 1;
+            }
+        }
+        // Replace the complete value, including any nested containers. The
+        // validated token stream keeps braces inside strings out of this walk.
+        replace(tokens[start].index, tokens[end].index + tokens[end][0].length, '"[REDACTED]"');
+        index = end;
+    }
+    pieces.push(text.slice(copiedThrough));
+    return pieces.join('');
+}
+
 function redactSensitiveText(text) {
-    return String(text || '')
-        .split('\n')
-        .map((line) => redactSensitiveLine(line))
-        .join('\n');
+    const value = String(text || '');
+    const json = redactJsonText(value);
+    if (json !== null) return json;
+    const lines = value.split('\n');
+    const output = [];
+    for (let index = 0; index < lines.length; index += 1) {
+        const fence = lines[index].match(/^[ \t]{0,3}(`{3,}|~{3,})[^\r\n]*\r?$/);
+        if (fence) {
+            const closing = new RegExp(`^[ \\t]{0,3}${fence[1][0]}{${fence[1].length},}[ \\t]*\\r?$`);
+            let end = index + 1;
+            while (end < lines.length && !closing.test(lines[end])) end += 1;
+            if (end < lines.length) {
+                // JSON examples in documentation need whole-value redaction
+                // too, especially when a sensitive property holds a container.
+                const body = redactJsonText(lines.slice(index + 1, end).join('\n'));
+                if (body !== null) {
+                    output.push(redactSensitiveLine(lines[index]), body, lines[end]);
+                    index = end;
+                    continue;
+                }
+            }
+        }
+        output.push(redactSensitiveLine(lines[index]));
+    }
+    return output.join('\n');
 }
 
 function previewText(text, maxChars = 1600) {
