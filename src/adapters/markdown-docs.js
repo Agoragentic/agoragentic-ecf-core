@@ -62,6 +62,8 @@ class MarkdownDocsAdapter extends ContextAdapter {
             if (raw === null) continue;
             const text = raw.toString('utf8');
             const sections = extractMarkdownSections(text);
+            const reservedSlugs = new Set(sections.map(section => slug(redactSensitiveText(section.heading))));
+            const usedSlugs = new Set();
             for (const section of sections) {
                 const sectionText = section.lines.join('\n').trim();
                 const safeHeading = redactSensitiveText(section.heading);
@@ -69,7 +71,18 @@ class MarkdownDocsAdapter extends ContextAdapter {
                     `${'#'.repeat(section.level)} ${safeHeading}`,
                     ...section.lines.slice(1),
                 ].join('\n').trim());
-                const sectionPath = `${relativePath}#${slug(safeHeading)}`;
+                const baseSlug = slug(safeHeading);
+                let sectionSlug = baseSlug;
+                if (safeHeading !== section.heading) {
+                    // Redaction can collapse different headings. Keep citations
+                    // distinct without including a credential or its hash.
+                    let suffix = 1;
+                    while (reservedSlugs.has(sectionSlug) || usedSlugs.has(sectionSlug)) {
+                        sectionSlug = `${baseSlug}-${suffix++}`;
+                    }
+                }
+                usedSlugs.add(sectionSlug);
+                const sectionPath = `${relativePath}#${sectionSlug}`;
                 records.push({
                     id: sourceId(sectionPath),
                     path: sectionPath,

@@ -50,7 +50,7 @@ test('recognized credential values in headings do not leak through section citat
     const root = fixture(t, text);
     const [record] = await sections(root);
     assert.equal(record.heading, 'Setup [REDACTED]');
-    assert.equal(record.path, 'README.md#setup-redacted');
+    assert.equal(record.path, 'README.md#setup-redacted-1');
     assert.equal(record.summary, 'Setup [REDACTED]: Local setup guidance.');
     assert.equal(JSON.stringify(record).includes(marker), false);
     assert.equal(record.hash, digest(text.trim()));
@@ -62,11 +62,27 @@ test('sensitive assignments in headings are redacted in every exposed section fi
     const root = fixture(t, text);
     const [record] = await sections(root);
     assert.equal(record.heading, 'password=[REDACTED]');
-    assert.equal(record.path, 'README.md#password-redacted');
+    assert.equal(record.path, 'README.md#password-redacted-1');
     assert.equal(record.summary, 'password=[REDACTED]: Local setup guidance.');
     assert.equal(record.content_preview, '## password=[REDACTED]\n\nLocal setup guidance.');
     assert.equal(JSON.stringify(record).includes(marker), false);
     assert.equal(record.hash, digest(text.trim()));
+});
+
+test('redacted headings keep distinct citations and do not collide with safe heading slugs', async t => {
+    const headings = ['Setup sk-test-syntheticHeadingOne', 'Setup sk-test-syntheticHeadingTwo', 'Setup [REDACTED]', 'Setup [REDACTED]-1'];
+    const text = headings.map((heading, index) => `# ${heading}\n\nGuidance ${index}.`).join('\n\n');
+    const root = fixture(t, text);
+    const records = await sections(root);
+    assert.deepEqual(records.map(record => record.path), [
+        'README.md#setup-redacted-2', 'README.md#setup-redacted-3',
+        'README.md#setup-redacted', 'README.md#setup-redacted-1',
+    ]);
+    assert.equal(new Set(records.map(record => record.id)).size, headings.length);
+    for (let index = 0; index < records.length; index += 1) {
+        assert.equal(records[index].hash, digest(`# ${headings[index]}\n\nGuidance ${index}.`));
+    }
+    assert.deepEqual(await sections(root), records, 'redacted section citations must remain deterministic');
 });
 
 test('compiled artifacts retain safe Markdown context without redacted credential values', async t => {
