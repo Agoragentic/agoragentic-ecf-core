@@ -103,3 +103,31 @@ test('compiled artifacts retain safe Markdown context without redacted credentia
         assert.equal(output.includes(marker.toLowerCase()), false, `${name} exposed a credential in a citation`);
     }
 });
+
+for (const [heading, expectedHeading, marker] of [
+    ['## password=synthetic-heading-password', 'password=[REDACTED]', 'synthetic-heading-password'],
+    ['# api_key: synthetic-heading-api-key', 'api_key: [REDACTED]', 'synthetic-heading-api-key'],
+    ['### "token": "synthetic-heading-token"', '"token": "[REDACTED]"', 'synthetic-heading-token'],
+]) {
+    test(`full compilation redacts heading credentials through every adapter: ${expectedHeading}`, async t => {
+        const text = `${heading}\n\nSafe local guidance.\n`;
+        const root = fixture(t, text);
+        const outDir = path.join(root, '.ecf-core');
+        const result = await compileProject({ projectRoot: root, outDir, emitAgentOs: true });
+        const fileRecord = result.contextPacket.sources.find(source => source.path === 'README.md');
+        const sectionRecord = result.contextPacket.sources.find(source => source.path.startsWith('README.md#'));
+        assert.ok(fileRecord, 'the filesystem source must participate in this regression');
+        assert.ok(sectionRecord, 'the Markdown section source must participate in this regression');
+        assert.equal(fileRecord.heading, expectedHeading);
+        assert.equal(fileRecord.hash, digest(text));
+        assert.equal(sectionRecord.hash, digest(text.trim()));
+        assert.equal(JSON.stringify(result).includes(marker), false, 'compiled return values exposed a heading credential');
+        assert.equal(result.agentOsImport.live_deploy_allowed, false);
+        for (const name of fs.readdirSync(outDir)) {
+            const artifact = path.join(outDir, name);
+            if (!fs.statSync(artifact).isFile()) continue;
+            const output = fs.readFileSync(artifact, 'utf8');
+            assert.equal(output.includes(marker), false, `${name} exposed a heading credential`);
+        }
+    });
+}

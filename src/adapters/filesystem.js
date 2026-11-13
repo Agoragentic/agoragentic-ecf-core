@@ -127,22 +127,27 @@ function isSensitiveKey(key) {
 
 function redactSensitiveLine(line) {
     const text = String(line || '');
-    const jsonPair = text.match(/^(\s*"([^"]+)"\s*:\s*)("(?:\\.|[^"\\])*"|[^,\r\n}]*)(.*)$/);
+    // Filesystem records retain Markdown heading markers while section records
+    // strip them. Apply the same credential rules to both representations.
+    const heading = text.match(/^([ \t]*#{1,6}[ \t]+)([\s\S]*)$/);
+    const prefix = heading ? heading[1] : '';
+    const content = heading ? heading[2] : text;
+    const jsonPair = content.match(/^(\s*"([^"]+)"\s*:\s*)("(?:\\.|[^"\\])*"|[^,\r\n}]*)(.*)$/);
     if (jsonPair && isSensitiveKey(jsonPair[2])) {
-        return `${jsonPair[1]}"[REDACTED]"${jsonPair[4]}`;
+        return `${prefix}${jsonPair[1]}"[REDACTED]"${jsonPair[4]}`;
     }
 
-    const yamlPair = text.match(/^(\s*([A-Za-z0-9_.-]+)\s*:\s*)(.*)$/);
+    const yamlPair = content.match(/^(\s*([A-Za-z0-9_.-]+)\s*:\s*)(.*)$/);
     if (yamlPair && isSensitiveKey(yamlPair[2])) {
-        return `${yamlPair[1]}[REDACTED]`;
+        return `${prefix}${yamlPair[1]}[REDACTED]`;
     }
 
-    const assignment = text.match(/^(\s*([A-Za-z0-9_.-]+)\s*=\s*)(.*)$/);
+    const assignment = content.match(/^(\s*([A-Za-z0-9_.-]+)\s*=\s*)(.*)$/);
     if (assignment && isSensitiveKey(assignment[2])) {
-        return `${assignment[1]}[REDACTED]`;
+        return `${prefix}${assignment[1]}[REDACTED]`;
     }
 
-    return text.replace(SENSITIVE_VALUE_PATTERN, '[REDACTED]');
+    return prefix + content.replace(SENSITIVE_VALUE_PATTERN, '[REDACTED]');
 }
 
 function redactSensitiveText(text) {
