@@ -2,7 +2,7 @@
 
 const path = require('node:path');
 const { ContextAdapter } = require('./base');
-const { fileType, previewText, readAdmittedSource, summarizeText, walkFiles } = require('./filesystem');
+const { fileType, previewText, readAdmittedSource, redactSensitiveText, summarizeText, walkFiles } = require('./filesystem');
 const { sha256, sourceId } = require('../core/hash');
 const { classifyPath, normalizePath } = require('../core/policy');
 
@@ -62,19 +62,39 @@ class MarkdownDocsAdapter extends ContextAdapter {
             if (raw === null) continue;
             const text = raw.toString('utf8');
             const sections = extractMarkdownSections(text);
+            const reservedSlugs = new Set(sections.map(section => slug(redactSensitiveText(section.heading))));
+            const usedSlugs = new Set();
             for (const section of sections) {
-                const sectionPath = `${relativePath}#${slug(section.heading)}`;
                 const sectionText = section.lines.join('\n').trim();
+                const safeHeading = redactSensitiveText(section.heading);
+                const safeText = redactSensitiveText([
+                    `${'#'.repeat(section.level)} ${safeHeading}`,
+                    ...section.lines.slice(1),
+                ].join('\n').trim());
+                const baseSlug = slug(safeHeading);
+                let sectionSlug = baseSlug;
+                if (safeHeading !== section.heading) {
+                    // Redaction can collapse different headings. Keep citations
+                    // distinct without including a credential or its hash.
+                    let suffix = 1;
+                    while (reservedSlugs.has(sectionSlug) || usedSlugs.has(sectionSlug)) {
+                        sectionSlug = `${baseSlug}-${suffix++}`;
+                    }
+                }
+                usedSlugs.add(sectionSlug);
+                const sectionPath = `${relativePath}#${sectionSlug}`;
                 records.push({
                     id: sourceId(sectionPath),
                     path: sectionPath,
                     type: 'markdown_section',
                     classification: 'allowed',
                     reason: 'markdown section extracted from allowed document',
+                    // Bind provenance to the original source, but expose only
+                    // redacted text in summaries, headings and citation paths.
                     hash: sha256(sectionText),
-                    summary: summarizeText(sectionText, fileType(relativePath)),
-                    content_preview: previewText(sectionText),
-                    heading: section.heading,
+                    summary: summarizeText(safeText, fileType(relativePath)),
+                    content_preview: previewText(safeText),
+                    heading: safeHeading,
                     byte_count: Buffer.byteLength(sectionText),
                     line_count: section.lines.length,
                     provenance: {
